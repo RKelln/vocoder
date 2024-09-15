@@ -1,0 +1,10 @@
+{
+    "frequency": 0.5,
+    "volume": 0.5,
+    "pulse": {
+        "weight": 1.0,
+        "pulse_frequency": 0.8,
+        "pulse_value": 100
+    },
+    "volume_random": 0.9
+}
