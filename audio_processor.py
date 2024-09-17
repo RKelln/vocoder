@@ -9,8 +9,8 @@ import pyaudio
 import numpy as np
 import scipy
 
-from audio_stream import AudioStream, VoiceActivityDetector
-from translators import get_translators, AlgorithmChain, FrequencyBinAlgorithm, VolumeOverTimeAlgorithm
+from audio_stream import DEFAULT_SAMPLE_RATE, MicAudioStream, PyAudioFileAudioStream, VoiceActivityDetector
+from translators import get_translators, AlgorithmChain, VolumeOverTimeAlgorithm
 from visualizer import get_visualizers, BarVisualizer, BubbleVisualizer
 
 for translator in get_translators().values():
@@ -72,9 +72,10 @@ def high_pass_filter(audio_chunk, cutoff:float=100, fs:float=44100):
 
 
 class AudioProcessor:
-    def __init__(self, num_outputs=5, use_vad=False, high_pass_filter=False, chain=None, visualizer=BarVisualizer):
+    def __init__(self, audio_stream, sampling_rate=DEFAULT_SAMPLE_RATE, num_outputs=5, use_vad=False, high_pass_filter=False, chain=None, visualizer=BarVisualizer):
         self.num_outputs = num_outputs
-        self.audio_stream = AudioStream()
+        self.audio_stream = audio_stream
+        self.sampling_rate = sampling_rate
         self.parameter_input = ParameterInput()
         self.output_visualizer = visualizer(num_outputs)
         self.algorithm_chain = AlgorithmChain()
@@ -127,18 +128,17 @@ class AudioProcessor:
 
 
     def run(self):
-        self.audio_stream.start_stream()
         try:
-            with self.output_visualizer:
+            with self.audio_stream, self.output_visualizer:
                 while True:
                     audio_chunk = self.audio_stream.get_audio_chunk()
                     if audio_chunk is not None:
                         if self.high_pass_filter:
                             # Apply high-pass filter
-                            filtered_chunk = high_pass_filter(audio_chunk)
+                            filtered_chunk = high_pass_filter(audio_chunk, fs=self.sampling_rate)
                         else:
                             filtered_chunk = audio_chunk
-
+                        
                         self.update_algorithm_weights()
 
                         if self.use_vad:
@@ -157,8 +157,6 @@ class AudioProcessor:
                         time.sleep(0.01)  # Sleep briefly to reduce CPU usage
         except KeyboardInterrupt:
             print("Stopping...")
-        finally:
-            self.audio_stream.stop_stream()
 
 
 def load_chain_settings(config_path):
@@ -174,10 +172,20 @@ if __name__ == "__main__":
     parser.add_argument("--visualizer", "--visual", type=str, choices=list(get_visualizers().keys()), default='bubble', help="Visualizer type")
     parser.add_argument("--vad", action="store_true", help="Use Voice Activity Detection")
     parser.add_argument("--filter", action="store_true", help="Apply high-pass filter")
-    parser.add_argument("--chain", type=str, required=True, help="Path to the chain configuration file.")
+    parser.add_argument("--chain", type=str, help="Path to the chain configuration file.")
+    parser.add_argument("--audio", type=str, help="Path to an audio file (.wav, .mp3) for testing.")
+    parser.add_argument("-r", "--rate", "--sampling_rate", type=int, default=DEFAULT_SAMPLE_RATE, help="Sampling rate for audio stream.")
     args = parser.parse_args()
 
     chain = {'volume_random': 1.0}
+    chain = {'volume_random': 
+                {
+                    "wieght": 1.0,
+                    "dynamic_range": 40,  # update the dynamic range 40 times
+                    "min_input": 1000, # because dynamic, start large
+                    "max_input": 100,  # because dynamic, start small
+                }
+            }   
 
     if args.chain:
         if not args.chain.endswith('.json'):
@@ -187,11 +195,20 @@ if __name__ == "__main__":
             print("Chain configuration file not found.", args.chain)
             sys.exit(1)
         chain = load_chain_settings(args.chain)
-        print(chain)
+    
+    print("Chain settings:")
+    print(chain)
 
+    # init visualizers
     visualizers = get_visualizers()
     visualizer = visualizers.get(args.visualizer.lower(), BubbleVisualizer)
 
-    processor = AudioProcessor(num_outputs=args.num_outputs, use_vad=args.vad, high_pass_filter=args.filter,
+    # init audio
+    if args.audio:
+        audio_stream = PyAudioFileAudioStream(args.audio, rate=args.rate, loop=True)
+    else:
+        audio_stream = MicAudioStream(rate=args.rate)
+
+    processor = AudioProcessor(audio_stream, sampling_rate=args.rate, num_outputs=args.num_outputs, use_vad=args.vad, high_pass_filter=args.filter,
                                chain=chain, visualizer=visualizer)
     processor.run()

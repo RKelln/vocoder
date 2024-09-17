@@ -29,11 +29,28 @@ class Algorithm:
         self.parameters['min_input'] = self.min_input
         self.parameters['max_input'] = self.max_input
 
-        self.input_range = self.max_input - self.min_input
-        assert self.input_range > 0, "Minimum input must be less than maximum input."
+        self.dynamic_range = self.parameters.get('dynamic_range', 0)
+
+        self.input_range = max(0, self.max_input - self.min_input)
+        if self.dynamic_range <= 0:
+            assert self.input_range > 0, "Minimum input must be less than maximum input."
+
 
     def process(self, audio_chunk, is_speech=True):
         raise NotImplementedError("Algorithm process method must be implemented.")
+
+    def update_input_range(self, min_input, max_input):
+        min_input = max(0, min(min_input, self.min_input))
+        max_input = max(max_input, self.max_input)
+        if min_input >= self.min_input and max_input <= self.max_input:
+            return
+        if min_input < self.min_input:
+            self.min_input = max(0, min_input - 0.1)
+        if max_input > self.max_input:
+            self.max_input = max_input + 0.1
+        self.input_range = self.max_input - self.min_input
+        print("Updated input range:", self.dynamic_range, self.min_input, self.max_input)
+        self.dynamic_range = max(0, self.dynamic_range -1)
 
     def scale_outputs(self, outputs):
         outputs = np.nan_to_num(outputs, nan=0.0)  # Replace NaN with zero
@@ -264,8 +281,10 @@ class VolumeOverTimeAlgorithm(OverTimeAlgorithm):
     default_max_input:float = 3500.0
 
     def _process(self, audio_chunk, time_inc):
+        # Ensure audio_chunk is a floating-point type to prevent overflow
+        audio_chunk = audio_chunk.astype(np.float32)
         # Calculate RMS (Root Mean Square) volume
-        rms = np.sqrt(np.mean(np.square(audio_chunk)))
+        rms = np.sqrt(np.nanmean(np.square(audio_chunk)))
         if np.isnan(rms):
             rms = 0
         return rms
@@ -298,7 +317,7 @@ class PulseOverTimeGenerator(OverTimeAlgorithm):
 class VolumeRandomOutputAlgorithm(Algorithm):
     default_min_input:float = 100.0
     default_max_input:float = 1500.0
-    default_silence_threshold:float = 130.0
+    default_silence_threshold:float = 0.2 # percentage of max_input
 
     def __init__(self, num_outputs, parameters):
         super().__init__(num_outputs, parameters)
@@ -306,24 +325,37 @@ class VolumeRandomOutputAlgorithm(Algorithm):
         self.parameters['silence_threshold'] = self.silence_threshold
         self.current_output = 0
         self.waiting = True
-
+        
     def process(self, audio_chunk, is_speech=True):
         # if the volume is low enough then pick a new output
+        if len(audio_chunk) == 0:
+            return self.silence()
+
+        threshold = self.silence_threshold * self.max_input
+
+        # Ensure audio_chunk is a floating-point type to prevent overflow
+        audio_chunk = audio_chunk.astype(np.float32)
 
         # Calculate RMS (Root Mean Square) volume
-        rms = np.sqrt(np.mean(np.square(audio_chunk)))
+        mean = np.nanmean(np.square(audio_chunk))
+        rms = np.sqrt(mean) if not np.isnan(mean) else 0
         if np.isnan(rms):
             rms = 0
-        if rms >= self.silence_threshold:
-            self.waiting = False
-        else:
-            rms = 0
+        
+        if rms >= threshold:
+            if self.waiting:
+                self.current_output = np.random.randint(0, self.num_outputs)
+                self.waiting = False
 
-        if not self.waiting and (rms < self.silence_threshold or is_speech == False):
-            self.current_output = np.random.randint(0, self.num_outputs)
-            rms = 0
+        if not self.waiting and (rms < threshold or is_speech == False):
             self.waiting = True
+
+        if self.dynamic_range > 0 and rms > 0:
+            self.update_input_range(rms, rms)
+            self.dynamic_range -= 1
+        
         outputs = [rms if i == self.current_output else 0 for i in range(self.num_outputs)]
+        
         return self.scale_outputs(outputs)
 
 
