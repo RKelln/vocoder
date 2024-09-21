@@ -17,6 +17,9 @@ class Algorithm:
     default_min_input:float = 0.0
     default_max_input:float = 1.0
 
+    min_input_threshold:float = 1.2
+    max_input_threshold:float = 1.05
+
     def __init__(self, num_outputs, parameters=None):
         self.num_outputs = num_outputs
         assert self.num_outputs > 0, "Number of outputs must be greater than zero."
@@ -40,16 +43,22 @@ class Algorithm:
         raise NotImplementedError("Algorithm process method must be implemented.")
 
     def update_input_range(self, min_input, max_input):
-        min_input = max(0, min(min_input, self.min_input))
-        max_input = max(max_input, self.max_input)
-        if min_input >= self.min_input and max_input <= self.max_input:
+        #min_input = max(0, min(min_input, self.min_input))
+        #max_input = max(max_input, self.max_input)
+        # if inputs are outside the current range plus the thresholds then update
+        # min input threshold is > 1 to reduce noise floor
+        # max input threshold is > 1 to reduce clipping
+        min_val = self.min_input / self.min_input_threshold
+        max_val = self.max_input
+        if (min_input >= min_val and 
+            max_input <= max_val):
             return
-        if min_input < self.min_input:
-            self.min_input = max(0, min_input - 0.1)
-        if max_input > self.max_input:
-            self.max_input = max_input + 0.1
+        if min_input < min_val:
+            self.min_input = max(0, min_input * self.min_input_threshold)
+        if max_input > max_val:
+            self.max_input = max_input * self.max_input_threshold
         self.input_range = self.max_input - self.min_input
-        print("Updated input range:", self.dynamic_range, self.min_input, self.max_input)
+        print(f"Updated input range ({self.dynamic_range:3d}): {self.input_range:6.1f} = {self.min_input:6.2f} to {self.max_input:6.2f}")
         self.dynamic_range = max(0, self.dynamic_range -1)
 
     def scale_outputs(self, outputs):
@@ -63,7 +72,7 @@ class Algorithm:
         scaled = np.interp(outputs, (self.min_input, self.max_input), (0, self.max_output_value))
 
         for i, value in enumerate(scaled):
-            if value >= self.max_output_value:
+            if value > self.max_output_value * 1.1:
                 print(f"Clip warning: {i}: {outputs[i]} vs max input: {self.max_input}.")
         
         return list(scaled)
@@ -352,7 +361,6 @@ class VolumeRandomOutputAlgorithm(Algorithm):
 
         if self.dynamic_range > 0 and rms > 0:
             self.update_input_range(rms, rms)
-            self.dynamic_range -= 1
         
         outputs = [rms if i == self.current_output else 0 for i in range(self.num_outputs)]
         
@@ -369,6 +377,9 @@ class AlgorithmChain:
         self.weights.append(weight)
 
     def process(self, audio_chunk, is_speech=True):
+        # convert to numpy format???
+        audio_chunk = np.frombuffer(audio_chunk, dtype=np.int16)
+
         combined_outputs = np.zeros(self.algorithms[0].num_outputs)
         for algorithm, weight in zip(self.algorithms, self.weights):
             if weight == 0:

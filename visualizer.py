@@ -19,6 +19,8 @@ def get_visualizers() -> dict:
         'bar': BarVisualizer,
         'list': ListVisualizer,
         'bubble': BubbleVisualizer,
+        "none": NullVisualizer,
+        "null": NullVisualizer,
     }
 
 class Visualizer:
@@ -32,6 +34,11 @@ class Visualizer:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
+        pass
+
+
+class NullVisualizer(Visualizer):
+    def display(self, outputs):
         pass
 
 class RichVisualizer(Visualizer):

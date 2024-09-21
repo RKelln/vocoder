@@ -9,7 +9,7 @@ import pyaudio
 import numpy as np
 import scipy
 
-from audio_stream import DEFAULT_SAMPLE_RATE, MicAudioStream, PyAudioFileAudioStream, VoiceActivityDetector
+from audio_stream import DEFAULT_SAMPLE_RATE, MicAudioStream, PyAudioFileAudioStream, HumeAudioStream, VoiceActivityDetector
 from translators import get_translators, AlgorithmChain, VolumeOverTimeAlgorithm
 from visualizer import get_visualizers, BarVisualizer, BubbleVisualizer
 
@@ -72,7 +72,13 @@ def high_pass_filter(audio_chunk, cutoff:float=100, fs:float=44100):
 
 
 class AudioProcessor:
-    def __init__(self, audio_stream, sampling_rate=DEFAULT_SAMPLE_RATE, num_outputs=5, use_vad=False, high_pass_filter=False, chain=None, visualizer=BarVisualizer):
+    def __init__(self, audio_stream, 
+                 sampling_rate=DEFAULT_SAMPLE_RATE, 
+                 num_outputs=5, use_vad=False, 
+                 high_pass_filter=False, 
+                 chain=None, 
+                 visualizer=BarVisualizer,
+                 fps=30.0):
         self.num_outputs = num_outputs
         self.audio_stream = audio_stream
         self.sampling_rate = sampling_rate
@@ -86,6 +92,8 @@ class AudioProcessor:
 
         if self.use_vad:
             self.voice_activity_detector = VoiceActivityDetector()
+
+        self.delay = 1.0 / fps
         
 
     def setup_algorithms(self, chain_dict:dict):
@@ -128,11 +136,16 @@ class AudioProcessor:
 
 
     def run(self):
+        chunk_duration = self.audio_stream.get_chunk_duration()
+
         try:
             with self.audio_stream, self.output_visualizer:
-                while True:
+                next_process_time = time.monotonic()
+                while self.audio_stream.running:
+                    t = time.monotonic()
                     audio_chunk = self.audio_stream.get_audio_chunk()
                     if audio_chunk is not None:
+                        #print("got audio chunk", len(audio_chunk))
                         if self.high_pass_filter:
                             # Apply high-pass filter
                             filtered_chunk = high_pass_filter(audio_chunk, fs=self.sampling_rate)
@@ -153,10 +166,19 @@ class AudioProcessor:
 
                         # Display outputs
                         self.output_visualizer.display(outputs)
+
+                        # sleep if needed
+                        # next_process_time += chunk_duration
+                        # sleep_time = next_process_time - time.monotonic()
+                        # if sleep_time > 0:
+                        #     time.sleep(sleep_time)
                     else:
-                        time.sleep(0.01)  # Sleep briefly to reduce CPU usage
+                        delay = max(0.01, self.delay - (time.monotonic() - t))
+                    time.sleep(delay)  # Sleep briefly to reduce CPU usage
         except KeyboardInterrupt:
-            print("Stopping...")
+            print("Stream stopped by user.")
+        except Exception as e:
+            print(f"An error occurred: {e}")
 
 
 def load_chain_settings(config_path):
@@ -175,7 +197,14 @@ if __name__ == "__main__":
     parser.add_argument("--chain", type=str, help="Path to the chain configuration file.")
     parser.add_argument("--audio", type=str, help="Path to an audio file (.wav, .mp3) for testing.")
     parser.add_argument("-r", "--rate", "--sampling_rate", type=int, default=DEFAULT_SAMPLE_RATE, help="Sampling rate for audio stream.")
+    parser.add_argument("--list-devices", action="store_true")
+    parser.add_argument("--device", type=int, default=-1)
     args = parser.parse_args()
+
+    if args.list_devices:
+        import sounddevice
+        print(sounddevice.query_devices())
+        exit(0)
 
     chain = {'volume_random': 1.0}
     chain = {'volume_random': 
@@ -205,10 +234,25 @@ if __name__ == "__main__":
 
     # init audio
     if args.audio:
-        audio_stream = PyAudioFileAudioStream(args.audio, rate=args.rate, loop=True)
+        if args.audio.startswith("hume"):
+            # split on : for config id
+            if ":" not in args.audio:
+                print("Hume config id not found, using default. You can set this using --audio hume:<config_id>")
+                audio_stream = HumeAudioStream(device=args.device)
+            else:
+                config_id = args.audio.split(":")[1]
+                audio_stream = HumeAudioStream(device=args.device, config_id=config_id)
+        elif args.audio == "mic":
+            audio_stream = MicAudioStream(rate=args.rate, device=args.device)
+        else:
+            if not os.path.exists(args.audio):
+                print("Audio file not found.", args.audio)
+                sys.exit
+            
+            audio_stream = PyAudioFileAudioStream(args.audio, rate=args.rate, loop=True)
     else:
-        audio_stream = MicAudioStream(rate=args.rate)
+        audio_stream = MicAudioStream(rate=args.rate, device=args.device)
 
     processor = AudioProcessor(audio_stream, sampling_rate=args.rate, num_outputs=args.num_outputs, use_vad=args.vad, high_pass_filter=args.filter,
-                               chain=chain, visualizer=visualizer)
+                               chain=chain, visualizer=visualizer, fps=30)
     processor.run()

@@ -9,8 +9,8 @@ Note: tested only on Unbuntu 22.04 wih python 3.11
 
 Make a python environment:
 ```
-$ python3.11 -m venv .venv
-# source .venv/bon/activate
+python3.11 -m venv .venv
+source .venv/bin/activate
 ```
 
 Note: for Linux need:
@@ -53,4 +53,20 @@ You can also select one of the visualizers (see `visualizers.py`):
 
 ```
 $ python audio_processor.py --visual list
+```
+
+
+
+## Install on Pi
+
+
+```bash
+sudo apt-get --yes update
+sudo apt-get --yes install libasound2-dev libportaudio2 ffmpeg python3.11-dev
+
+python3.11 -m venv .venv
+source .venv/bin/activate
+
+pip install python-dotenv "hume[microphone]" pyaudio numpy pyaudio librosa rich scipy
+
 ```
