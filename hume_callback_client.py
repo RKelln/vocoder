@@ -16,7 +16,7 @@ from hume._voice.microphone.microphone_sender import Sender
 from hume._voice.voice_socket import VoiceSocket
 from hume.error.hume_client_exception import HumeClientException
 
-from hume._voice.microphone.microphone import Microphone
+from hume_microphone import Microphone
 from hume._voice.microphone.microphone_interface import MicrophoneInterface
 from hume._voice.microphone.microphone_sender import MicrophoneSender
 from hume._voice.microphone.chat_client import ChatClient
