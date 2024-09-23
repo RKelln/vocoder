@@ -20,7 +20,7 @@ $ sudo apt install python3.11-dev
 
 Install packages:
 ```
-$ pip install pyaudio numpy pyaudio librosa rich scipy
+$ pip install python-dotenv "hume[microphone]" pyaudio numpy pyaudio librosa rich scipy pydub webrtcvad sounddevice
 ```
 
 ## Run
@@ -67,6 +67,6 @@ sudo apt-get --yes install libasound2-dev libportaudio2 ffmpeg python3.11-dev
 python3.11 -m venv .venv
 source .venv/bin/activate
 
-pip install python-dotenv "hume[microphone]" pyaudio numpy pyaudio librosa rich scipy
+pip install python-dotenv "hume[microphone]" pyaudio numpy pyaudio librosa pydub scipy webrtcvad sounddevice
 
 ```

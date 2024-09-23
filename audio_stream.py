@@ -3,19 +3,18 @@ import numpy as np
 import threading
 import queue
 import asyncio
-import os
-import math
 import time
 from io import BytesIO
 
 import webrtcvad
 import librosa
 from pydub import AudioSegment
+import sounddevice
 
 from hume_stream import hume_stream, DEFAULT_HUME_CONFIG_ID
 
 DEFAULT_SAMPLE_RATE = 44100
-DEFAULT_CHUNK_SIZE = 2048
+DEFAULT_CHUNK_SIZE = 1024
 
 
 def hz_to_mel(f):
@@ -80,7 +79,13 @@ class VoiceActivityDetector:
 
 
 class AudioStream:
-    def __init__(self, rate=DEFAULT_SAMPLE_RATE, chunk_size=DEFAULT_CHUNK_SIZE):
+    channels:int
+    rate:int
+    chunk_size:int
+    running:bool
+
+    def __init__(self, channels:int=1, rate:int=DEFAULT_SAMPLE_RATE, chunk_size:int=DEFAULT_CHUNK_SIZE):
+        self.channels = channels
         self.rate = rate
         self.chunk_size = chunk_size
         self.running = False
@@ -104,23 +109,18 @@ class AudioStream:
     def __del__(self):
         if self.running:
             self.stop_stream()
-
-    def sample_rate(self):
-        return self.rate
     
-    def chunk_size(self):
-        return self.chunk_size
-    
-    def get_chunk_duration(self):
+    def get_chunk_duration(self) -> float:  # seconds
         # e.g., 1600 / 16000 = 0.1 sec
-        return self.chunk_size / self.rate
+        return float(self.chunk_size) / float(self.rate)
 
 class PyAudioStream(AudioStream):
-    def __init__(self, device:int=-1, rate=DEFAULT_SAMPLE_RATE, chunk_size=DEFAULT_CHUNK_SIZE):
-        super().__init__(rate, chunk_size)
+    def __init__(self, device:int=-1, channels:int=1, rate:int=DEFAULT_SAMPLE_RATE, chunk_size:int=DEFAULT_CHUNK_SIZE):
+        super().__init__(channels, rate, chunk_size)
         self.stream = None
         self.audio_interface = pyaudio.PyAudio()
         self.device = device
+        self.channels = channels
         self.buffer = []
         self.lock = threading.Lock()
 
@@ -138,7 +138,10 @@ class PyAudioStream(AudioStream):
         self.audio_interface.terminate()
 
     def callback(self, in_data, frame_count, time_info, status):
+        #print(f"Callback: {len(in_data)} bytes, frames: {frame_count}")
         data = np.frombuffer(in_data, dtype=np.int16)
+        if not np.any(data):
+            print(f"Callback: silence")
         with self.lock:
             self.buffer.append(data)
         return (None, pyaudio.paContinue)
@@ -150,13 +153,10 @@ class PyAudioStream(AudioStream):
             else:
                 return None
 
-    def stop_stream(self):
-        super().stop_stream()
-        
 
 class PyAudioFileAudioStream(PyAudioStream):
-    def __init__(self, file_path, rate=DEFAULT_SAMPLE_RATE, chunk_size=DEFAULT_CHUNK_SIZE, loop=False):
-        super().__init__(rate, chunk_size)
+    def __init__(self, file_path, channels:int=1, rate=DEFAULT_SAMPLE_RATE, chunk_size=DEFAULT_CHUNK_SIZE, loop=False):
+        super().__init__(channels, rate, chunk_size)
         self.file_path = file_path
         self.loop = loop
         self.audio_data = self.load_audio_file(file_path)
@@ -168,7 +168,7 @@ class PyAudioFileAudioStream(PyAudioStream):
         # Open a PyAudio output stream with a callback
         self.stream = self.audio_interface.open(
             format=pyaudio.paInt16,
-            channels=1,
+            channels=self.channels,
             rate=self.rate,
             output=True,
             frames_per_buffer=self.chunk_size,
@@ -223,24 +223,56 @@ class PyAudioFileAudioStream(PyAudioStream):
 
 class MicAudioStream(PyAudioStream):
 
+    def __init__(self, device:int=-1, channels:int=None, rate:int=None, chunk_size:int=None):
+        if device is None or device < 0:
+            device = sounddevice.default.device[0]
+        print(f"device: {device}")
+
+        sound_device = sounddevice.query_devices(device=device)
+        print(f"sound_device: {sound_device}")
+
+        if channels is None:
+            channels = sound_device["max_input_channels"]
+
+        if channels == 0:
+            devices = sounddevice.query_devices()
+            message = (
+                "Selected input device does not have any input channels. \n"
+                "Please set MicrophoneInterface(device=<YOUR DEVICE ID>). \n"
+                f"Devices:\n{devices}"
+            )
+            raise IOError(message)
+
+        if rate is None:
+            rate = int(sound_device["default_samplerate"])
+
+        if chunk_size is None:
+            chunk_size = DEFAULT_CHUNK_SIZE
+
+        print(f"Mic info: channels: {channels}, sample rate: {rate}, chunk size: {chunk_size}")
+
+        super().__init__(device, channels, rate, chunk_size)
+
+
     def start_stream(self, device:int=-1):
         if device < 0:
             device = None
         super().start_stream()
         self.stream = self.audio_interface.open(
             format=pyaudio.paInt16,
-            channels=1,
+            channels=self.channels,
             rate=self.rate,
             input=True,
             frames_per_buffer=self.chunk_size,
             stream_callback=self.callback,
             input_device_index=device,
         )
-
+        self.stream.start_stream()
+        
 
 class HumeAudioStream(AudioStream):
-    def __init__(self, rate=DEFAULT_SAMPLE_RATE, chunk_size=DEFAULT_CHUNK_SIZE, device=-1, config_id=DEFAULT_HUME_CONFIG_ID):
-        super().__init__(rate, chunk_size)
+    def __init__(self, device:int=-1, channels:int=1, rate:int=DEFAULT_SAMPLE_RATE, chunk_size:int=DEFAULT_CHUNK_SIZE, config_id:str=DEFAULT_HUME_CONFIG_ID):
+        super().__init__(channels, rate, chunk_size)
         self.device = device
         self.config_id = config_id
         self.audio_queue = queue.Queue()
@@ -298,11 +330,12 @@ class HumeAudioStream(AudioStream):
                 small_chunk = samples[start:end]
                 self.audio_queue.put(small_chunk)
                 #print(f"Enqueued chunk {i+1}/{num_complete_chunks}, Size: {len(small_chunk)} bytes")
-                time.sleep(delay)
+                time.sleep(0.01) # delay
             
-            # if remaining bytes, pad and send
+            # if remaining bytes, pad the end and send
             if end_index < total_length:
                 small_chunk = samples[end_index:]
+                small_chunk = np.pad(small_chunk, (0, bytes_per_chunk - len(small_chunk)), mode='constant')
                 self.audio_queue.put(small_chunk)
 
         except Exception as e:

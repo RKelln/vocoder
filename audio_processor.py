@@ -1,25 +1,22 @@
 import argparse
-import threading
 import time
 import sys
 import json
 import os
+import importlib
 
-import pyaudio
-import numpy as np
-import scipy
+from audio_stream import DEFAULT_SAMPLE_RATE, AudioStream, MicAudioStream, PyAudioFileAudioStream, HumeAudioStream, VoiceActivityDetector
+from translators import get_translators, AlgorithmChain
+from visualizers import get_visualizers, Visualizer, BarVisualizer, BubbleVisualizer
 
-from audio_stream import DEFAULT_SAMPLE_RATE, MicAudioStream, PyAudioFileAudioStream, HumeAudioStream, VoiceActivityDetector
-from translators import get_translators, AlgorithmChain, VolumeOverTimeAlgorithm
-from visualizer import get_visualizers, BarVisualizer, BubbleVisualizer
-
+print("Loading...")
 for translator in get_translators().values():
     print(translator)
-    import translators
+    importlib.import_module("translators", str(translator))
 
 for visualizer in get_visualizers().values():
     print(visualizer)
-    import visualizer
+    importlib.import_module("visualizers", str(visualizer))
 
 """
 Audio Processor Module
@@ -72,6 +69,11 @@ def high_pass_filter(audio_chunk, cutoff:float=100, fs:float=44100):
 
 
 class AudioProcessor:
+    num_outputs:int
+    audio_stream:AudioStream
+    sampling_rate:int
+    output_visualizer:Visualizer
+
     def __init__(self, audio_stream, 
                  sampling_rate=DEFAULT_SAMPLE_RATE, 
                  num_outputs=5, use_vad=False, 
@@ -168,13 +170,16 @@ class AudioProcessor:
                         self.output_visualizer.display(outputs)
 
                         # sleep if needed
-                        # next_process_time += chunk_duration
-                        # sleep_time = next_process_time - time.monotonic()
-                        # if sleep_time > 0:
-                        #     time.sleep(sleep_time)
+                        next_process_time += chunk_duration
+                        now = time.monotonic()
+                        delay = next_process_time - now
+                        if delay < 0:
+                            next_process_time = now
                     else:
                         delay = max(0.01, self.delay - (time.monotonic() - t))
-                    time.sleep(delay)  # Sleep briefly to reduce CPU usage
+                    
+                    if delay > 0:
+                        time.sleep(delay)  # Sleep briefly to reduce CPU usage
         except KeyboardInterrupt:
             print("Stream stopped by user.")
         except Exception as e:
@@ -209,7 +214,7 @@ if __name__ == "__main__":
     chain = {'volume_random': 1.0}
     chain = {'volume_random': 
                 {
-                    "wieght": 1.0,
+                    "weight": 1.0,
                     "dynamic_range": 40,  # update the dynamic range 40 times
                     "min_input": 1000, # because dynamic, start large
                     "max_input": 100,  # because dynamic, start small
@@ -243,7 +248,7 @@ if __name__ == "__main__":
                 config_id = args.audio.split(":")[1]
                 audio_stream = HumeAudioStream(device=args.device, config_id=config_id)
         elif args.audio == "mic":
-            audio_stream = MicAudioStream(rate=args.rate, device=args.device)
+            audio_stream = MicAudioStream(device=args.device)
         else:
             if not os.path.exists(args.audio):
                 print("Audio file not found.", args.audio)
@@ -251,7 +256,7 @@ if __name__ == "__main__":
             
             audio_stream = PyAudioFileAudioStream(args.audio, rate=args.rate, loop=True)
     else:
-        audio_stream = MicAudioStream(rate=args.rate, device=args.device)
+        audio_stream = MicAudioStream(device=args.device)
 
     processor = AudioProcessor(audio_stream, sampling_rate=args.rate, num_outputs=args.num_outputs, use_vad=args.vad, high_pass_filter=args.filter,
                                chain=chain, visualizer=visualizer, fps=30)
