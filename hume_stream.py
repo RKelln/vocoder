@@ -29,6 +29,20 @@ async def hume_stream(device:int = -1, config_id:str=DEFAULT_HUME_CONFIG_ID, aud
                                                     audio_callback=audio_callback)
 
 
+async def mic_test(device:int = -1):
+    from hume._voice.microphone.microphone import Microphone
+
+    if device < 0:
+        device = None
+
+    with Microphone.context(device=device) as microphone:
+        print(f"Microphone sample rate: {microphone.sample_rate}")
+        print(f"Microphone channels: {microphone.num_channels}")
+        async for chunk in microphone:
+            print(f"Received audio chunk: {len(chunk)} bytes")
+            await asyncio.sleep(0.1)
+
+
 if __name__ == "__main__":
     load_dotenv()
     if not os.getenv("HUME_API_KEY"):
@@ -40,12 +54,17 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--list-devices", action="store_true")
     parser.add_argument("--device", type=int, default=-1)
+    parser.add_argument("--test-mic", "--test_mic", action="store_true")
     parser.add_argument("--config-id", type=str, default=DEFAULT_HUME_CONFIG_ID)
     parser.add_argument("--audio-callback", action="store_true")
     args = parser.parse_args()
     if args.list_devices:
         import sounddevice
         print(sounddevice.query_devices())
+        exit(0)
+
+    if args.test_mic:
+        asyncio.run(mic_test(args.device))
         exit(0)
 
     audio_callback = None
