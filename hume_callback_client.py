@@ -8,13 +8,15 @@ import logging
 from dataclasses import dataclass
 from typing import ClassVar, Callable, Optional
 
+import wave
+
 from hume._voice.microphone.asyncio_utilities import Stream
 from hume._voice.microphone.audio_utilities import play_audio
 from hume._voice.microphone.microphone_sender import Sender
 from hume._voice.voice_socket import VoiceSocket
 from hume.error.hume_client_exception import HumeClientException
 
-from hume._voice.microphone.microphone import Microphone
+from hume_microphone import Microphone
 from hume._voice.microphone.microphone_interface import MicrophoneInterface
 from hume._voice.microphone.microphone_sender import MicrophoneSender
 from hume._voice.microphone.chat_client import ChatClient
@@ -25,7 +27,7 @@ logger = logging.getLogger(__name__)
 # audio callback type
 AudioCallbackType = Optional[Callable[[bytes], None]]
 
-VERBOSE_HUME = False
+VERBOSE_HUME = True
 
 @dataclass
 class CallbackMicrophoneInterface(MicrophoneInterface):
@@ -38,6 +40,8 @@ class CallbackMicrophoneInterface(MicrophoneInterface):
         device: Optional[int] = Microphone.DEFAULT_DEVICE,
         allow_user_interrupt: bool = MicrophoneInterface.DEFAULT_ALLOW_USER_INTERRUPT,
         audio_callback: AudioCallbackType = None,
+        # overrides for autodetected values
+        num_channels: Optional[int] = None, sample_rate:Optional[int] = None, chunk_size: Optional[int] = None
     ) -> None:
         """Start the microphone interface with a callback.
 
@@ -47,8 +51,12 @@ class CallbackMicrophoneInterface(MicrophoneInterface):
             allow_user_interrupt (bool): Whether to allow the user to interrupt EVI.
             callback (AudioCallbackType): Function to call with each audio chunk returned.
         """
-        with Microphone.context(device=device) as microphone:
+        if device < -1:
+            device = None
+        
+        with Microphone.context(device=device, num_channels=num_channels, sample_rate=sample_rate, chunk_size=chunk_size) as microphone:
             sender = MicrophoneSender.new(microphone=microphone, allow_interrupt=allow_user_interrupt)
+            #sender = MicrophoneFileSaver.new(microphone=microphone, file_path="mic_file.wav", allow_interrupt=allow_user_interrupt)
             chat_client = CallbackChatClient.new(sender=sender)
             print("Configuring socket with microphone settings...")
             await socket.update_session_settings(
@@ -63,6 +71,7 @@ class CallbackMicrophoneInterface(MicrophoneInterface):
 @dataclass
 class CallbackChatClient(ChatClient):
 
+    audio_callback: AudioCallbackType = None
     play_callback: AudioCallbackType = None
 
     async def _recv(self, *, socket: VoiceSocket, audio_callback: AudioCallbackType = None, verbose:bool=False) -> None:
@@ -129,8 +138,9 @@ class CallbackChatClient(ChatClient):
         Args:
             socket (VoiceSocket): EVI socket.
         """
-        self.play_callback = audio_callback
-
+        if play_callback is not None:
+            self.play_callback = play_callback
+        
         recv = self._recv(socket=socket, audio_callback=audio_callback, verbose=VERBOSE_HUME)
         send = self.sender.send(socket=socket)
 
@@ -139,3 +149,77 @@ class CallbackChatClient(ChatClient):
             await asyncio.gather(recv, send)
         else:
             await asyncio.gather(recv, self._play(), send)
+
+
+@dataclass
+class MicrophoneFileSaver(Sender):
+    """Saves microphone audio data to a file instead of sending over a socket."""
+
+    microphone: Microphone
+    file_path: str
+    send_audio: bool
+    allow_interrupt: bool
+
+    # We need to keep track of the file object
+    file: Optional[object] = None  # Initialized as None
+
+    @classmethod
+    def new(cls, *, microphone: Microphone, file_path: str, allow_interrupt: bool) -> "MicrophoneFileSaver":
+        """Create a new MicrophoneFileSaver.
+
+        Args:
+            microphone (Microphone): Microphone instance.
+            file_path (str): Path to the output file where audio data will be saved.
+            allow_interrupt (bool): Whether to allow interrupting the audio stream.
+        """
+        print(f"Creating new MicrophoneFileSaver with file path: {file_path}")
+        return cls(microphone=microphone, file_path=file_path, send_audio=True, allow_interrupt=allow_interrupt)
+
+    async def on_audio_begin(self) -> None:
+        """Handle the start of an audio stream."""
+        self.send_audio = self.allow_interrupt
+        # Open the file for writing in binary mode
+        self.file = open(self.file_path, 'wb')
+        logger.debug(f"Opened file {self.file_path} for writing audio data.")
+
+    async def on_audio_end(self) -> None:
+        """Handle the end of an audio stream."""
+        self.send_audio = True
+        if self.file:
+            # Close the file
+            self.file.close()
+            logger.debug(f"Closed file {self.file_path} after writing audio data.")
+            self.file = None
+
+    async def send(self, *, socket: VoiceSocket) -> None:
+        """Save audio data to a file instead of sending over an EVI socket.
+
+        Args:
+            socket (VoiceSocket): EVI socket (not used in this implementation).
+        """
+
+        with wave.open(self.file_path, 'wb') as wav_file:
+            wav_file.setnchannels(self.microphone.num_channels)
+            wav_file.setsampwidth(self.microphone.sample_width)
+            wav_file.setframerate(self.microphone.sample_rate)
+            
+            async for byte_str in self.microphone:
+                if self.send_audio:
+                    # Write the audio bytes to the file
+                    #byte_str = bytes(byte_str)
+                    nonzero = any(byte_str)  # Ensure the byte string is not empty
+                    print(f"Received audio chunk: {len(byte_str)} bytes, nonzero_bytes: {nonzero}")
+                    wav_file.writeframes(byte_str)
+                    # Optionally, flush to ensure data is written promptly
+                    await asyncio.sleep(0)  # Yield control to ensure responsiveness
+
+    async def send_tool_response(self, *, socket: VoiceSocket, tool_call_id: str, content: str) -> None:
+        """Handle tool responses (not applicable for file saving).
+
+        Args:
+            socket (VoiceSocket): EVI socket (not used in this implementation).
+            tool_call_id (str): Tool call ID.
+            content (str): Tool response content.
+        """
+        # Since we're not using the socket, we can log the response
+        logger.debug(f"Tool response: {{'tool_call_id': {tool_call_id}, 'content': {content}}}")

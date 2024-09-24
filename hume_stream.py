@@ -33,14 +33,15 @@ async def mic_test(device:int = -1):
     from hume._voice.microphone.microphone import Microphone
 
     if device < 0:
+        print("Using default microphone device")
         device = None
 
     with Microphone.context(device=device) as microphone:
         print(f"Microphone sample rate: {microphone.sample_rate}")
         print(f"Microphone channels: {microphone.num_channels}")
-        async for chunk in microphone:
-            print(f"Received audio chunk: {len(chunk)} bytes")
-            await asyncio.sleep(0.1)
+        async for audio_chunk in microphone:
+            print(f"Received audio chunk: {len(audio_chunk)} bytes")
+            await asyncio.sleep(0.01)
 
 
 if __name__ == "__main__":
