@@ -67,6 +67,6 @@ sudo apt-get --yes install libasound2-dev libportaudio2 ffmpeg python3.11-dev
 python3.11 -m venv .venv
 source .venv/bin/activate
 
-pip install python-dotenv "hume[microphone]" pyaudio numpy pyaudio librosa pydub scipy webrtcvad sounddevice
+pip install python-dotenv "hume[microphone]" pyaudio numpy pyaudio librosa pydub scipy webrtcvad sounddevice RPi.GPIO gpiozero
 
 ```
