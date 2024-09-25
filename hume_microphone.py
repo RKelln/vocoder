@@ -87,14 +87,18 @@ class Microphone:
 
         print(f"Mic info: channels: {microphone.num_channels}, sample rate: {microphone.sample_rate}, chunk size: {microphone.chunk_size}, sample width: {microphone.sample_width}")
 
+        stop_event = asyncio.Event()
+
         # pylint: disable=c-extension-no-member
         # NOTE:
         # - cffi types determined by logging; see more at [https://cffi.readthedocs.io/en/stable/ref.html]
         # - put_nowait(indata[:]) seems to block, so use call_soon_threadsafe() like the reference implementation
         def callback(indata: cffi_backend.buffer, _frames: int, _time: CDataBase, _status: CallbackFlags) -> None:
+            # if stop_event.is_set():
+            #     return
             event_loop.call_soon_threadsafe(microphone.stream.queue.put_nowait, indata[:])
 
-        # Include blocksize, channels, and samplerate
+        # Include blocksize, channels, and sample_rate
         with RawInputStream(
             callback=callback,
             dtype=cls.DATA_TYPE,
@@ -103,7 +107,10 @@ class Microphone:
             samplerate=sample_rate,
             device=device,
         ):
-            yield microphone
+            try:
+                yield microphone
+            finally:
+                stop_event.set()
 
     def __aiter__(self) -> AsyncIterator[bytes]:
         """Iterate over bytes of microphone input."""

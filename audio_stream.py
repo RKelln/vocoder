@@ -5,6 +5,7 @@ import queue
 import asyncio
 import time
 from io import BytesIO
+import logging
 
 import webrtcvad
 import librosa
@@ -16,6 +17,7 @@ from hume_stream import hume_stream, DEFAULT_HUME_CONFIG_ID
 DEFAULT_SAMPLE_RATE = 44100
 DEFAULT_CHUNK_SIZE = 1024
 
+logger = logging.getLogger(__name__)
 
 def hz_to_mel(f):
     return 2595 * np.log10(1 + f / 700)
@@ -226,10 +228,10 @@ class MicAudioStream(PyAudioStream):
     def __init__(self, device:int=-1, channels:int=None, rate:int=None, chunk_size:int=None):
         if device is None or device < 0:
             device = sounddevice.default.device[0]
-        print(f"device: {device}")
+        logger.info(f"device: {device}")
 
         sound_device = sounddevice.query_devices(device=device)
-        print(f"sound_device: {sound_device}")
+        logger.info(f"sound_device: {sound_device}")
 
         if channels is None:
             channels = sound_device["max_input_channels"]
@@ -249,7 +251,7 @@ class MicAudioStream(PyAudioStream):
         if chunk_size is None:
             chunk_size = DEFAULT_CHUNK_SIZE
 
-        print(f"Mic info: channels: {channels}, sample rate: {rate}, chunk size: {chunk_size}")
+        logger.info(f"Mic info: channels: {channels}, sample rate: {rate}, chunk size: {chunk_size}")
 
         super().__init__(device, channels, rate, chunk_size)
 
@@ -275,10 +277,17 @@ class HumeAudioStream(AudioStream):
         super().__init__(channels, rate, chunk_size)
         self.device = device
         self.config_id = config_id
+
         self.audio_queue = queue.Queue()
         self.thread = None
         self.buffer = b''  # Buffer to store leftover bytes
         self.buffer_lock = threading.Lock()  # Lock for thread-safe buffer access
+        self.running = False
+
+        # Asyncio-related attributes
+        self.loop = None
+        self.hume_task = None
+        
 
     def start_stream(self):
         if not self.running:
@@ -292,14 +301,47 @@ class HumeAudioStream(AudioStream):
         except queue.Empty:
             return None
 
-    def stop_stream(self):
+    def stop_stream(self, timeout=10):
         if self.running:
+            logger.debug("Stopping HumeAudioStream.")
             self.running = False
-            if self.thread:
-                self.thread.join()
+
+            if self.loop and self.hume_task:
+                logger.debug("Cancelling hume_stream task.")
+                # Cancel the hume_task
+                #self.loop.call_soon_threadsafe(self.hume_task.cancel)
+                self.hume_task.cancel() 
+                # this will cause a cascade of cancels in the hume_stream and _run_home_stream
+                # that will stop everything else
+
 
     def _run_hume_stream(self):
-        asyncio.run(hume_stream(device=self.device, config_id=self.config_id, audio_callback=self._audio_callback))
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+
+        try:
+            # Create the hume_stream task
+            self.hume_task = self.loop.create_task(
+                hume_stream(
+                    device=self.device,
+                    config_id=self.config_id,
+                    audio_callback=self._audio_callback,
+                )
+            )
+            # Run the event loop until hume_stream is complete or cancelled
+            self.loop.run_until_complete(self.hume_task)
+        except asyncio.CancelledError:
+            logger.debug("hume_stream task was cancelled.")
+        except Exception as e:
+            logger.error(f"Exception in hume_stream thread: {e}")
+        finally:
+            self.hume_task = None
+            if self.loop:
+                self.loop.close()
+                self.loop = None
+            if self.thread and self.thread.is_alive():
+                self.thread.join()
+
 
     def _audio_callback(self, audio_bytes:bytes):
         if not self.running:
@@ -330,7 +372,7 @@ class HumeAudioStream(AudioStream):
                 small_chunk = samples[start:end]
                 self.audio_queue.put(small_chunk)
                 #print(f"Enqueued chunk {i+1}/{num_complete_chunks}, Size: {len(small_chunk)} bytes")
-                time.sleep(0.01) # delay
+                time.sleep(0.01) # delay FIXME: not suing actual delay, handled by the audio_processor
             
             # if remaining bytes, pad the end and send
             if end_index < total_length:
@@ -339,104 +381,6 @@ class HumeAudioStream(AudioStream):
                 self.audio_queue.put(small_chunk)
 
         except Exception as e:
-            print(f"Error in hume audio callback: {e}")
+            logger.error(f"Error in hume audio callback: {e}")
             self.running = False
-
-
-# class PyHumeAudioStream(PyAudioStream):
-#     def __init__(self, rate=DEFAULT_SAMPLE_RATE, chunk_size=DEFAULT_CHUNK_SIZE, device=-1, config_id=DEFAULT_HUME_CONFIG_ID):
-#         super().__init__(rate, chunk_size)
-#         self.device = device
-#         self.config_id = config_id
-#         self.audio_queue = queue.Queue()
-#         self.thread = None
-#         self.buffer = b''  # Buffer to store leftover bytes
-#         self.buffer_lock = threading.Lock()  # Lock for thread-safe buffer access
-
-#     def start_stream(self):
-#         if not self.running:
-#             self.running = True
-#             self.thread = threading.Thread(target=self._run_hume_stream, daemon=True)
-#             self.thread.start()
-
-#     def get_audio_chunk(self):
-#         try:
-#             return self.audio_queue.get_nowait()
-#         except queue.Empty:
-#             return None
-
-#     def stop_stream(self):
-#         if self.running:
-#             self.running = False
-#             if self.thread:
-#                 self.thread.join()
-
-#     def _run_hume_stream(self):
-#         asyncio.run(hume_stream(device=self.device, config_id=self.config_id))
-
-#     async def _play_callback(self, audio_chunk:bytes):
-#         segment = AudioSegment.from_file(BytesIO(audio_chunk))
-    
-#         # self.stream = self.audio_interface.open(
-#         #     format=pyaudio.paInt16,
-#         #     channels=1,
-#         #     rate=self.rate,
-#         #     output=True,
-#         #     frames_per_buffer=self.chunk_size,
-#         #     stream_callback=self.callback,
-#         # )
-#         def play():
-#             self.stream = self.audio_interface.open(format=self.audio_interface.get_format_from_width(segment.sample_width),
-#                             channels=segment.channels,
-#                             rate=segment.frame_rate,
-#                             output=True, # FIXME: don't actually output to speakers
-#                             stream_callback=self.callback,) 
-#             self.stream.start_stream()
-
-#         await asyncio.to_thread(play, segment)
-        
-
-#     def _audio_callback(self, audio_chunk:bytes):
-#         if not self.running:
-#             return
-        
-#         try:
-#             segment = AudioSegment.from_file(BytesIO(audio_chunk))
-
-#             # Define audio specifications
-#             SAMPLE_RATE = segment.frame_rate    # e.g., 16000 Hz
-#             SAMPLE_WIDTH = segment.sample_width # 16 bits = 2 bytes
-#             CHANNELS = segment.channels
-
-#             # Calculate bytes per chunk
-#             bytes_per_chunk = self.chunk_size * SAMPLE_WIDTH * CHANNELS
-#             delay = bytes_per_chunk / SAMPLE_RATE
-
-#             # Acquire lock before modifying the buffer
-#             with self.buffer_lock:
-#                 # Prepend leftover bytes to the new audio_chunk
-#                 combined_chunk = self.buffer + audio_chunk
-#                 total_length = len(combined_chunk)
-#                 num_complete_chunks = total_length // bytes_per_chunk
-
-#                 # Calculate end index for complete chunks
-#                 end_index = num_complete_chunks * bytes_per_chunk
-
-#                 # Extract complete chunks
-#                 for i in range(num_complete_chunks):
-#                     start = i * bytes_per_chunk
-#                     end = start + bytes_per_chunk
-#                     small_chunk = combined_chunk[start:end]
-#                     self.audio_queue.put(small_chunk)
-#                     #time.sleep(delay)
-#                     #print(f"Enqueued chunk {i+1}/{num_complete_chunks}, Size: {len(small_chunk)} bytes")
-
-#                 # Store any remaining bytes in the buffer
-#                 self.buffer = combined_chunk[end_index:]
-#                 if self.buffer:
-#                     pass
-#                     #logger.debug(f"Buffering {len(self.buffer)} leftover bytes for next callback.")
-
-#         except Exception as e:
-#             print(f"Error in hume audio callback: {e}")
-#             self.running = False
+            raise e

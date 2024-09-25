@@ -1,6 +1,9 @@
 import numpy as np
+import logging
 
 from audio_stream import hz_to_mel, mel_to_hz, DEFAULT_SAMPLE_RATE, DEFAULT_CHUNK_SIZE
+
+logger = logging.getLogger(__name__)
 
 def get_translators():
     return {
@@ -58,7 +61,7 @@ class Algorithm:
         if max_input > max_val:
             self.max_input = max_input * self.max_input_threshold
         self.input_range = self.max_input - self.min_input
-        print(f"Updated input range ({self.dynamic_range:3d}): {self.input_range:6.1f} = {self.min_input:6.2f} to {self.max_input:6.2f}")
+        logger.debug(f"Updated input range ({self.dynamic_range:3d}): {self.input_range:6.1f} = {self.min_input:6.2f} to {self.max_input:6.2f}")
         self.dynamic_range = max(0, self.dynamic_range -1)
 
     def scale_outputs(self, outputs):
@@ -73,7 +76,7 @@ class Algorithm:
 
         for i, value in enumerate(scaled):
             if value > self.max_output_value * 1.1:
-                print(f"Clip warning: {i}: {outputs[i]} vs max input: {self.max_input}.")
+                logger.debug(f"Clip warning: {i}: {outputs[i]} vs max input: {self.max_input}.")
         
         return list(scaled)
     
@@ -173,9 +176,9 @@ class MelFrequencyBinAlgorithm(Algorithm):
         # Convert frequencies to FFT bin indices
         self.bin_indices = np.floor(freq_edges * self.N / self.sample_rate).astype(int)
         self.bin_indices = np.clip(self.bin_indices, 0, self.N // 2)  # Valid indices for rfft
-        print("Mel edges:", mel_edges)
-        print("Freq edges:", freq_edges)
-        print("Bin indices:", self.bin_indices)
+        logger.info("Mel edges:", mel_edges)
+        logger.info("Freq edges:", freq_edges)
+        logger.info("Bin indices:", self.bin_indices)
         #self.bin_indices = [0, 4, 8, 16, 32, 128]
 
         # noise floor / removal

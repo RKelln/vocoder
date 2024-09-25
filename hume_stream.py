@@ -1,6 +1,9 @@
 import os
 import asyncio
 import argparse
+import logging
+from typing import Optional
+import threading
 
 from hume import HumeVoiceClient, MicrophoneInterface
 from hume_callback_client import CallbackMicrophoneInterface, AudioCallbackType
@@ -10,8 +13,11 @@ from dotenv import load_dotenv
 
 DEFAULT_HUME_CONFIG_ID = "d2868b61-e3ad-4d71-b3d5-5ee091672d04"
 
+logger = logging.getLogger(__name__)
 
-async def hume_stream(device:int = -1, config_id:str=DEFAULT_HUME_CONFIG_ID, audio_callback:AudioCallbackType = None ) -> None:
+async def hume_stream(device:Optional[int] = -1, 
+                      config_id:str=DEFAULT_HUME_CONFIG_ID, 
+                      audio_callback:AudioCallbackType = None) -> None:
     load_dotenv()
 
     # Retrieve the Hume API key from the environment variables
@@ -19,28 +25,34 @@ async def hume_stream(device:int = -1, config_id:str=DEFAULT_HUME_CONFIG_ID, aud
     # Connect and authenticate with Hume
     client = HumeVoiceClient(HUME_API_KEY)
 
-    # Start streaming EVI over your device's microphone and speakers
-    async with client.connect(config_id=config_id) as socket:
-        if device == -1:
-            await CallbackMicrophoneInterface.start(socket, allow_user_interrupt=True, 
-                                                    audio_callback=audio_callback)   
-        else:   
-            await CallbackMicrophoneInterface.start(socket, device=device, allow_user_interrupt=True, 
-                                                    audio_callback=audio_callback)
-
+    try:
+        # Start streaming EVI over your device's microphone and speakers
+        async with client.connect(config_id=config_id) as socket:
+            await CallbackMicrophoneInterface.start(
+                socket,
+                device=device,
+                allow_user_interrupt=True,
+                audio_callback=audio_callback
+            )
+    except asyncio.CancelledError:
+        logger.info("hume_stream was cancelled. Cleaning up...")
+        raise
+    except Exception as e:
+        logger.error(f"An error occurred in hume_stream: {e}")
+        raise
 
 async def mic_test(device:int = -1):
     from hume._voice.microphone.microphone import Microphone
 
     if device < 0:
-        print("Using default microphone device")
+        logger.info("Using default microphone device")
         device = None
 
     with Microphone.context(device=device) as microphone:
-        print(f"Microphone sample rate: {microphone.sample_rate}")
-        print(f"Microphone channels: {microphone.num_channels}")
+        logger.info(f"Microphone sample rate: {microphone.sample_rate}")
+        logger.info(f"Microphone channels: {microphone.num_channels}")
         async for audio_chunk in microphone:
-            print(f"Received audio chunk: {len(audio_chunk)} bytes")
+            logger.info(f"Received audio chunk: {len(audio_chunk)} bytes")
             await asyncio.sleep(0.01)
 
 

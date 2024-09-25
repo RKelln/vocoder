@@ -5,37 +5,64 @@ import json
 import os
 import importlib
 
-from audio_stream import DEFAULT_SAMPLE_RATE, AudioStream, MicAudioStream, PyAudioFileAudioStream, HumeAudioStream, VoiceActivityDetector
+# Initialize logging first
+from logging_config import setup_logging
+logger = setup_logging()
+
+from audio_stream import (
+    DEFAULT_SAMPLE_RATE, AudioStream, MicAudioStream, 
+    PyAudioFileAudioStream, HumeAudioStream, VoiceActivityDetector
+)
 from translators import get_translators, AlgorithmChain
 from visualizers import get_visualizers, Visualizer, BarVisualizer, BubbleVisualizer
 
-print("Loading...")
-for translator in get_translators().values():
-    print(translator)
-    importlib.import_module("translators", str(translator))
-
-for visualizer in get_visualizers().values():
-    print(visualizer)
-    importlib.import_module("visualizers", str(visualizer))
 
 """
 Audio Processor Module
 This module provides classes and functions for processing audio streams, applying filters, and visualizing the output.
+
 Classes:
     ParameterInput:
         Manages parameters for audio processing, such as sentiment.
     AudioProcessor:
         Processes audio streams, applies algorithms, and visualizes the output.
+
 Functions:
     high_pass_filter(audio_chunk, cutoff=100, fs=44100):
         Applies a high-pass filter to the given audio chunk.
+    load_chain_settings(config_path):
+        Loads chain settings from a JSON configuration file.
+
 Usage:
     Run the module as a script to start the audio processor with optional command-line arguments:
         --vad: Use Voice Activity Detection
         --filter: Apply high-pass filter
+        --chain: Path to the chain configuration file.
+        --audio: Path to an audio file (.wav, .mp3) for testing.
+        --visualizer: Visualizer type (bar, bubble, etc.)
+        --rate: Sampling rate for audio stream.
+        --list-devices: List available audio devices.
+        --device: Specify audio device by index.
+
 Example:
-    python audio_processor.py --vad --filter
+    python audio_processor.py --vad --filter --chain config.json --audio sample.wav --visualizer bar --rate 44100
 """
+
+def load_components():
+    logger.info("Loading translators...")
+    translators = get_translators()
+    for translator in translators.values():
+        logger.info(f"Loading translator: {str(translator.__name__)}")
+        importlib.import_module(translator.__module__, translator.__name__)
+
+    logger.info("Loading visualizers...")
+    visualizers = get_visualizers()
+    # deduplicate visualizers
+    for visualizer in visualizers.values():
+        # not already loaded
+        logger.info(f"Loading visualizer: {str(visualizer.__name__)}")
+        importlib.import_module(visualizer.__module__, visualizer.__name__)
+
 
 class ParameterInput:
     def __init__(self):
@@ -146,8 +173,9 @@ class AudioProcessor:
                 while self.audio_stream.running:
                     t = time.monotonic()
                     audio_chunk = self.audio_stream.get_audio_chunk()
+                    #logger.debug(f"Received audio chunk: {audio_chunk is not None}")
                     if audio_chunk is not None:
-                        #print("got audio chunk", len(audio_chunk))
+                        
                         if self.high_pass_filter:
                             # Apply high-pass filter
                             filtered_chunk = high_pass_filter(audio_chunk, fs=self.sampling_rate)
@@ -181,9 +209,9 @@ class AudioProcessor:
                     if delay > 0:
                         time.sleep(delay)  # Sleep briefly to reduce CPU usage
         except KeyboardInterrupt:
-            print("Stream stopped by user.")
+            logger.info("Stream stopped by user.")
         except Exception as e:
-            print(f"An error occurred: {e}")
+            logger.error(f"An error occurred: {e}")
 
 
 def load_chain_settings(config_path):
@@ -211,6 +239,8 @@ if __name__ == "__main__":
         print(sounddevice.query_devices())
         exit(0)
 
+    load_components() # load translators and visualizers
+
     chain = {'volume_random': 1.0}
     chain = {'volume_random': 
                 {
@@ -223,15 +253,15 @@ if __name__ == "__main__":
 
     if args.chain:
         if not args.chain.endswith('.json'):
-            print("Chain configuration file must be a JSON file.")
+            logger.error("Chain configuration file must be a JSON file.")
             sys.exit(1)
         if not os.path.exists(args.chain):
-            print("Chain configuration file not found.", args.chain)
+            logger.error("Chain configuration file not found.", args.chain)
             sys.exit(1)
         chain = load_chain_settings(args.chain)
     
-    print("Chain settings:")
-    print(chain)
+    logger.info("Chain settings:")
+    logger.info(chain)
 
     # init visualizers
     visualizers = get_visualizers()
@@ -242,7 +272,7 @@ if __name__ == "__main__":
         if args.audio.startswith("hume"):
             # split on : for config id
             if ":" not in args.audio:
-                print("Hume config id not found, using default. You can set this using --audio hume:<config_id>")
+                logger.info("Hume config id not found, using default. You can set this using --audio hume:<config_id>")
                 audio_stream = HumeAudioStream(device=args.device)
             else:
                 config_id = args.audio.split(":")[1]
@@ -251,7 +281,7 @@ if __name__ == "__main__":
             audio_stream = MicAudioStream(device=args.device)
         else:
             if not os.path.exists(args.audio):
-                print("Audio file not found.", args.audio)
+                logger.error("Audio file not found.", args.audio)
                 sys.exit
             
             audio_stream = PyAudioFileAudioStream(args.audio, rate=args.rate, loop=True)

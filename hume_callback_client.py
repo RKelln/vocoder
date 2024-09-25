@@ -1,12 +1,12 @@
-"""Async client for handling messages to and from an EVI connection."""
+"""Custom override for async Hume.ai client for handling messages to and from an EVI connection."""
 
 import asyncio
 import base64
-import datetime
 import json
 import logging
 from dataclasses import dataclass
-from typing import ClassVar, Callable, Optional
+from typing import Callable, Optional
+from typing_extensions import TypeAlias
 
 import wave
 
@@ -25,7 +25,7 @@ from hume._voice.voice_socket import VoiceSocket
 logger = logging.getLogger(__name__)
 
 # audio callback type
-AudioCallbackType = Optional[Callable[[bytes], None]]
+AudioCallbackType: TypeAlias = Optional[Callable[[bytes], None]]
 
 VERBOSE_HUME = True
 
@@ -51,19 +51,19 @@ class CallbackMicrophoneInterface(MicrophoneInterface):
             allow_user_interrupt (bool): Whether to allow the user to interrupt EVI.
             callback (AudioCallbackType): Function to call with each audio chunk returned.
         """
-        if device < -1:
+        if device is None or device < 0:
             device = None
         
         with Microphone.context(device=device, num_channels=num_channels, sample_rate=sample_rate, chunk_size=chunk_size) as microphone:
             sender = MicrophoneSender.new(microphone=microphone, allow_interrupt=allow_user_interrupt)
             #sender = MicrophoneFileSaver.new(microphone=microphone, file_path="mic_file.wav", allow_interrupt=allow_user_interrupt)
             chat_client = CallbackChatClient.new(sender=sender)
-            print("Configuring socket with microphone settings...")
+            logger.info("Configuring socket with microphone settings...")
             await socket.update_session_settings(
                 sample_rate=microphone.sample_rate,
                 num_channels=microphone.num_channels,
             )
-            print("Microphone connected. Say something!")
+            logger.info("Microphone connected. Say something!")
             await chat_client.run(socket=socket, audio_callback=audio_callback)
 
 
@@ -97,7 +97,7 @@ class CallbackChatClient(ChatClient):
                 error_code: str = message["code"]
                 raise HumeClientException(f"Error ({error_code}): {error_message}")
             elif message["type"] == "tool_call":
-                print(
+                logging.warning(
                     "Warning: EVI is trying to make a tool call. "
                     "Either remove tool calling from your config or "
                     "use the VoiceSocket directly without a MicrophoneInterface."
@@ -172,7 +172,7 @@ class MicrophoneFileSaver(Sender):
             file_path (str): Path to the output file where audio data will be saved.
             allow_interrupt (bool): Whether to allow interrupting the audio stream.
         """
-        print(f"Creating new MicrophoneFileSaver with file path: {file_path}")
+        logger.debug(f"Creating new MicrophoneFileSaver with file path: {file_path}")
         return cls(microphone=microphone, file_path=file_path, send_audio=True, allow_interrupt=allow_interrupt)
 
     async def on_audio_begin(self) -> None:
@@ -206,9 +206,8 @@ class MicrophoneFileSaver(Sender):
             async for byte_str in self.microphone:
                 if self.send_audio:
                     # Write the audio bytes to the file
-                    #byte_str = bytes(byte_str)
-                    nonzero = any(byte_str)  # Ensure the byte string is not empty
-                    print(f"Received audio chunk: {len(byte_str)} bytes, nonzero_bytes: {nonzero}")
+                    #nonzero = any(byte_str)  # Ensure the byte string is not empty
+                    #logger.debug(f"Received audio chunk: {len(byte_str)} bytes, nonzero_bytes: {nonzero}")
                     wav_file.writeframes(byte_str)
                     # Optionally, flush to ensure data is written promptly
                     await asyncio.sleep(0)  # Yield control to ensure responsiveness
